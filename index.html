@@ -348,5 +348,154 @@
     #bukh-planner #o-edit-save{background:#658f72;border-color:#658f72;color:#fff;font-weight:600}
     @media(max-width:650px){#bukh-planner .bp-task{grid-template-columns:29px 72px 1fr}#bukh-planner .task-progress{grid-column:3!important}#bukh-planner .task-done-editor{grid-column:2/4!important}.bp .task-delete{grid-column:3!important}}
   </style>
+  <style>
+    #bukh-planner .recurrence-settings[hidden],#bukh-planner #o-repeat-weekdays-wrap[hidden],#bukh-planner #o-repeat-days-wrap[hidden]{display:none!important}
+    #bukh-planner .recurrence-settings{display:grid;gap:8px}
+    #bukh-planner .recurrence-settings label{font-size:12px;color:#65566f}
+    #bukh-planner .recurrence-settings select{width:100%}
+    #bukh-planner .recurrence-days{display:flex;flex-wrap:wrap;gap:5px}
+    #bukh-planner .recurrence-days label{display:flex!important;align-items:center;gap:3px;width:34px;font-size:11px!important;color:#50405c!important}
+    #bukh-planner .recurrence-days input{width:auto!important;padding:0!important}
+    #bukh-planner .repeat-mark{display:inline-block;margin-left:5px;color:#74608d;font-size:13px;line-height:1;vertical-align:baseline}
+    #bukh-planner .bp-cal-task .repeat-mark{font-size:11px;margin-left:3px}
+  </style>
+  <script>
+    (()=>{
+      const storageKey='neurobukh-planner-organizations-v8';
+      const root=document.getElementById('bukh-planner');
+      const dialog=root.querySelector('#o-task-dialog');
+      if(!dialog)return;
+
+      const read=()=>{try{return JSON.parse(localStorage.getItem(storageKey))}catch(_){return null}};
+      const findTask=(data,id)=>{
+        for(const [key,month] of Object.entries(data?.months||{})){
+          const task=(month.tasks||[]).find(item=>item.id===id);
+          if(task)return{key,month,task};
+        }
+        return null;
+      };
+      const days=Array.from({length:31},(_,index)=>index+1);
+      const weekDays=[['1','Пн'],['2','Вт'],['3','Ср'],['4','Чт'],['5','Пт'],['6','Сб'],['0','Вс']];
+      const settingsHtml=()=>`<div id="o-recurrence" class="task-dialog-section"><strong>Регулярность</strong><label class="dialog-all-done"><input id="o-repeat-enabled" type="checkbox"> Повторять задачу</label><div id="o-repeat-settings" class="recurrence-settings" hidden><label>Повторять<select id="o-repeat-frequency"><option value="daily">Каждый день</option><option value="weekly">В выбранные дни недели</option><option value="monthly">В выбранные числа месяца</option></select></label><div id="o-repeat-weekdays-wrap" hidden><strong>Выберите дни недели</strong><div class="recurrence-days recurrence-weekdays">${weekDays.map(([day,label])=>`<label><input type="checkbox" value="${day}" data-repeat-weekday> ${label}</label>`).join('')}</div></div><div id="o-repeat-days-wrap" hidden><strong>Выберите числа месяца</strong><div class="recurrence-days">${days.map(day=>`<label><input type="checkbox" value="${day}" data-repeat-day> ${day}</label>`).join('')}</div></div><p class="bp-note">Задача появится во всех следующих месяцах до конца 2028 года.</p></div></div>`;
+      const recurrenceControls=()=>({enabled:dialog.querySelector('#o-repeat-enabled'),settings:dialog.querySelector('#o-repeat-settings'),frequency:dialog.querySelector('#o-repeat-frequency'),daysWrap:dialog.querySelector('#o-repeat-days-wrap'),weekDaysWrap:dialog.querySelector('#o-repeat-weekdays-wrap')});
+      const toggleDays=()=>{const c=recurrenceControls();if(c.daysWrap)c.daysWrap.hidden=c.frequency.value!=='monthly';if(c.weekDaysWrap)c.weekDaysWrap.hidden=c.frequency.value!=='weekly'};
+      const setupDialog=()=>{
+        if(!dialog.open)return;
+        let block=dialog.querySelector('#o-recurrence');
+        if(!block){
+          root.querySelector('#o-edit-note').closest('label').insertAdjacentHTML('afterend',settingsHtml());
+          block=dialog.querySelector('#o-recurrence');
+          dialog.querySelector('#o-repeat-enabled').addEventListener('change',()=>{const c=recurrenceControls();c.settings.hidden=!c.enabled.checked});
+          dialog.querySelector('#o-repeat-frequency').addEventListener('change',toggleDays);
+        }
+        const c=recurrenceControls();
+        const item=findTask(read(),dialog.dataset.taskId)?.task;
+        const rule=item?.recurrence;
+        c.enabled.checked=!!rule;
+        c.settings.hidden=!c.enabled.checked;
+        c.frequency.value=rule?.frequency||'monthly';
+        const selected=rule?.monthDays||[];
+        const selectedWeekDays=rule?.weekDays||[];
+        dialog.querySelectorAll('[data-repeat-day]').forEach(input=>input.checked=selected.includes(+input.value));
+        dialog.querySelectorAll('[data-repeat-weekday]').forEach(input=>input.checked=selectedWeekDays.includes(+input.value));
+        if(!selected.length){const date=root.querySelector('#o-edit-date').value;const day=Number(date.slice(-2));const defaultDay=dialog.querySelector(`[data-repeat-day][value="${day}"]`);if(defaultDay)defaultDay.checked=true}
+        if(!selectedWeekDays.length){const date=root.querySelector('#o-edit-date').value;const weekDay=new Date(`${date}T12:00:00`).getDay();const defaultWeekDay=dialog.querySelector(`[data-repeat-weekday][value="${weekDay}"]`);if(defaultWeekDay)defaultWeekDay.checked=true}
+        toggleDays();
+      };
+      const dateFromTask=(key,task)=>{
+        const match=/^(\d{4})-(\d{1,2})$/.exec(key||'');
+        const day=Number(String(task.date||'').match(/^\d{1,2}/)?.[0]);
+        if(!match||!day)return null;
+        return new Date(+match[1],+match[2]-1,day);
+      };
+      const keyFor=date=>`${date.getFullYear()}-${date.getMonth()+1}`;
+      const taskDate=date=>`${String(date.getDate()).padStart(2,'0')}.${String(date.getMonth()+1).padStart(2,'0')}`;
+      const addOccurrence=(data,source,rootId,date,rule)=>{
+        const key=keyFor(date);
+        if(!data.months[key])data.months[key]={tasks:[],done:{}};
+        const copy=JSON.parse(JSON.stringify(source));
+        copy.id=`${rootId}-repeat-${date.getFullYear()}${String(date.getMonth()+1).padStart(2,'0')}${String(date.getDate()).padStart(2,'0')}`;
+        copy.date=taskDate(date);
+        copy.day='регулярная задача';
+        copy.recurrence=rule;
+        copy.recurrenceParent=rootId;
+        data.months[key].tasks.push(copy);
+      };
+      const saveSeries=(pending)=>{
+        const data=read();
+        const located=findTask(data,pending.id);
+        if(!data||!located)return;
+        const rootId=located.task.recurrenceParent||located.task.id;
+        const rootTask=findTask(data,rootId)?.task||located.task;
+        const rootLocation=findTask(data,rootId)||located;
+        for(const month of Object.values(data.months)){
+          month.tasks=(month.tasks||[]).filter(task=>task.recurrenceParent!==rootId);
+          if(month.done)Object.keys(month.done).filter(id=>id.startsWith(`${rootId}-repeat-`)).forEach(id=>delete month.done[id]);
+        }
+        if(!pending.enabled){delete rootTask.recurrence;localStorage.setItem(storageKey,JSON.stringify(data));location.reload();return}
+        const rule={frequency:pending.frequency,monthDays:pending.monthDays,weekDays:pending.weekDays};
+        rootTask.recurrence=rule;
+        delete rootTask.recurrenceParent;
+        const start=dateFromTask(rootLocation.key,rootTask);
+        const finish=new Date(2028,11,31);
+        if(!start){localStorage.setItem(storageKey,JSON.stringify(data));location.reload();return}
+        if(rule.frequency==='daily'){
+          for(let date=new Date(start);date.setDate(date.getDate()+1),date<=finish;)addOccurrence(data,rootTask,rootId,date,rule);
+        }else if(rule.frequency==='weekly'){
+          const chosen=rule.weekDays.length?rule.weekDays:[start.getDay()];
+          for(let date=new Date(start);date.setDate(date.getDate()+1),date<=finish;)if(chosen.includes(date.getDay()))addOccurrence(data,rootTask,rootId,date,rule);
+        }else{
+          const selected=[...new Set(rule.monthDays)].filter(day=>day>=1&&day<=31).sort((a,b)=>a-b);
+          const chosen=selected.length?selected:[start.getDate()];
+          for(let year=start.getFullYear(),month=start.getMonth();year<=2028;month++){
+            if(month===12){month=0;year++}
+            if(year>2028)break;
+            const max=new Date(year,month+1,0).getDate();
+            chosen.filter(day=>day<=max).forEach(day=>{
+              const date=new Date(year,month,day);
+              if(date>start&&date<=finish)addOccurrence(data,rootTask,rootId,date,rule);
+            });
+          }
+        }
+        Object.values(data.months).forEach(month=>month.tasks.sort((a,b)=>Number(String(a.date).match(/^\d+/)?.[0]||0)-Number(String(b.date).match(/^\d+/)?.[0]||0)));
+        localStorage.setItem(storageKey,JSON.stringify(data));
+        location.reload();
+      };
+      dialog.querySelector('form').addEventListener('submit',event=>{
+        const c=recurrenceControls();
+        if(!c.enabled||!root.querySelector('#o-edit-title').value.trim()||!root.querySelector('#o-edit-date').value)return;
+        const pending={id:dialog.dataset.taskId,enabled:c.enabled.checked,frequency:c.frequency.value,monthDays:[...dialog.querySelectorAll('[data-repeat-day]:checked')].map(input=>+input.value),weekDays:[...dialog.querySelectorAll('[data-repeat-weekday]:checked')].map(input=>+input.value)};
+        setTimeout(()=>saveSeries(pending),0);
+      },true);
+      root.addEventListener('click',event=>{
+        const button=event.target.closest('[data-remove-task]');
+        if(!button)return;
+        const data=read(),located=findTask(data,button.dataset.removeTask);
+        if(!located)return;
+        const rootId=located.task.recurrenceParent||located.task.id;
+        const isSeries=!!located.task.recurrenceParent||!!findTask(data,rootId)?.task?.recurrence;
+        if(!isSeries)return;
+        event.preventDefault();event.stopImmediatePropagation();
+        if(!confirm('Удалить всю регулярную задачу во всех месяцах?'))return;
+        for(const month of Object.values(data.months)){
+          month.tasks=(month.tasks||[]).filter(task=>task.id!==rootId&&task.recurrenceParent!==rootId);
+          if(month.done)Object.keys(month.done).filter(id=>id===rootId||id.startsWith(`${rootId}-repeat-`)).forEach(id=>delete month.done[id]);
+        }
+        localStorage.setItem(storageKey,JSON.stringify(data));
+        location.reload();
+      },true);
+      const markRecurring=()=>{
+        const data=read();
+        if(!data)return;
+        const recurring=new Set(Object.values(data.months||{}).flatMap(month=>(month.tasks||[]).filter(task=>task.recurrence||task.recurrenceParent).map(task=>task.id)));
+        root.querySelectorAll('[data-edit-task]').forEach(button=>{
+          if(!recurring.has(button.dataset.editTask)||button.querySelector('.repeat-mark'))return;
+          const mark=document.createElement('span');mark.className='repeat-mark';mark.title='Регулярная задача';mark.setAttribute('aria-label','Регулярная задача');mark.textContent='↻';button.append(mark);
+        });
+      };
+      new MutationObserver(()=>{setupDialog();markRecurring()}).observe(root,{childList:true,subtree:true,attributes:true,attributeFilter:['open']});
+      setupDialog();markRecurring();
+    })();
+  </script>
 </div>
 </body></html>
